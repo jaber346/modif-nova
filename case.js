@@ -43,7 +43,6 @@ function normJid(jid = "") {
 }
 
 function getSender(m) {
-  // groupe -> participant, privé -> remoteJid
   return normJid(m.key?.participant || m.participant || m.key?.remoteJid || "");
 }
 
@@ -55,8 +54,6 @@ function getBody(m) {
   // ✅ Ephemeral wrapper
   if (type === "ephemeralMessage") {
     const inner = msg.ephemeralMessage?.message || {};
-    const innerType = Object.keys(inner)[0];
-    if (!innerType) return "";
     return getBody({ message: inner, key: m.key });
   }
 
@@ -102,24 +99,15 @@ function getBody(m) {
 }
 
 // ================= SAVE PREFIX (optional) =================
-// ⚠️ si tu veux que setprefix reste même après redémarrage
 function savePrefixToConfigFile(newPrefix) {
   try {
     const configPath = path.join(__dirname, "config.js");
     if (!fs.existsSync(configPath)) return;
 
     let content = fs.readFileSync(configPath, "utf8");
-
-    // remplace PREFIX: "..."
-    content = content.replace(
-      /PREFIX\s*:\s*["'`].*?["'`]/,
-      `PREFIX: "${newPrefix}"`
-    );
-
+    content = content.replace(/PREFIX\s*:\s*["'`].*?["'`]/, `PREFIX: "${newPrefix}"`);
     fs.writeFileSync(configPath, content, "utf8");
-  } catch (e) {
-    // ignore (ça évite de casser si format différent)
-  }
+  } catch {}
 }
 
 // ================= MAIN HANDLER =================
@@ -142,14 +130,11 @@ module.exports = async (sock, m, prefix, setMode, currentMode) => {
 
     const usedPrefix = prefix || config.PREFIX || ".";
     const body = (getBody(m) || "").trim();
-
     if (!body) return;
 
     const reply = (text) => sock.sendMessage(from, { text }, { quoted: m });
 
-    const isCmd = body.startsWith(usedPrefix);
-    if (!isCmd) return;
-
+    if (!body.startsWith(usedPrefix)) return;
     if (String(currentMode).toLowerCase() === "self" && !isOwner) return;
 
     const parts = body.slice(usedPrefix.length).trim().split(/\s+/);
@@ -162,11 +147,31 @@ module.exports = async (sock, m, prefix, setMode, currentMode) => {
       return reply("✅ Commands rechargées.");
     }
 
+    // ================= GROUP CONTEXT (FIX ADMIN) =================
+    let metadata = null;
+    let participants = [];
+    let admins = [];
+    let isAdmin = false;
+    let isBotAdmin = false;
+    let isAdminOrOwner = false;
+
+    if (isGroup) {
+      metadata = await sock.groupMetadata(from);
+      participants = metadata.participants || [];
+
+      admins = participants
+        .filter((p) => p.admin)
+        .map((p) => normJid(p.id));
+
+      isAdmin = admins.includes(normJid(sender));
+      isBotAdmin = admins.includes(normJid(botJid));
+      isAdminOrOwner = isAdmin || isOwner;
+    }
+
     // ================= BUILT-IN QUICK COMMANDS =================
     if (command === "ping") {
       const start = Date.now();
       const modeText = (currentMode || "public").toUpperCase();
-
       return reply(
 `╭━━〔 🤖 NOVA XMD V1 〕━━╮
 ┃ 🏓 𝙿𝙸𝙽𝙶
@@ -181,7 +186,6 @@ module.exports = async (sock, m, prefix, setMode, currentMode) => {
     if (command === "mode") {
       if (!isOwner) return reply("🚫 Commande réservée au propriétaire.");
       const mode = (args[0] || "").toLowerCase();
-
       if (mode === "public") {
         setMode("public");
         return reply("🔓 Mode PUBLIC activé.");
@@ -197,12 +201,8 @@ module.exports = async (sock, m, prefix, setMode, currentMode) => {
       if (!isOwner) return reply("🚫 Commande réservée au propriétaire.");
       const newP = args[0];
       if (!newP) return reply(`Utilisation : ${usedPrefix}setprefix .`);
-
       config.PREFIX = newP;
-
-      // ✅ persiste si possible
       savePrefixToConfigFile(newP);
-
       return reply(`✅ Prefix changé : *${newP}*`);
     }
 
@@ -213,16 +213,26 @@ module.exports = async (sock, m, prefix, setMode, currentMode) => {
         prefix: usedPrefix,
         currentMode,
         setMode,
+
+        // ✅ permissions
         isOwner,
         isGroup,
+        isAdmin,
+        isBotAdmin,
+        isAdminOrOwner,
+
+        // ✅ group info
+        metadata,
+        participants,
+        admins,
+
+        // base
         sender,
         from,
         reply
       });
     }
 
-    // commande inconnue
-    // return reply("Commande inconnue. Tape .menu");
   } catch (err) {
     console.log("CASE ERROR:", err?.message || err);
   }
